@@ -1,0 +1,24 @@
+{
+  "name": "eares-website",
+  "version": "1.0.0",
+  "description": "EARES Alumni Association Website - Ένωση Αποφοίτων Ριζαρείου Εκκλησιαστικής Σχολής",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "mysql -u root -p < db/schema.sql"
+  },
+  "keywords": ["eares", "alumni", "express", "rizareios"],
+  "author": "EARES",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "mysql2": "^3.6.5",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
