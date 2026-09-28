@@ -181,13 +181,18 @@ add_action(
 add_filter( 'login_headerurl', fn() => home_url( '/' ) );
 add_filter( 'login_headertext', fn() => get_bloginfo( 'name' ) );
 
-// Visitors see "Είσοδος μελών" rather than the generic "Log in".
+// Visitors see "Είσοδος μελών · Εγγραφή" rather than the generic "Log in";
+// logged-in members get their profile next to "Log out".
 add_filter(
 	'loginout',
 	function ( $link ) {
 		if ( is_user_logged_in() ) {
-			return $link;
+			return sprintf( '<a href="%s">Το προφίλ μου</a> · %s', esc_url( get_edit_profile_url() ), $link );
 		}
-		return sprintf( '<a href="%s">Είσοδος μελών</a>', esc_url( wp_login_url() ) );
+		$links = sprintf( '<a href="%s">Είσοδος μελών</a>', esc_url( wp_login_url() ) );
+		if ( get_option( 'users_can_register' ) ) {
+			$links .= sprintf( ' · <a href="%s">Εγγραφή</a>', esc_url( wp_registration_url() ) );
+		}
+		return $links;
 	}
 );
