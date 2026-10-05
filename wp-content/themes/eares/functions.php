@@ -149,6 +149,38 @@ remove_action( 'admin_print_scripts', 'print_emoji_detection_script' );
 remove_action( 'admin_print_styles', 'print_emoji_styles' );
 add_filter( 'emoji_svg_url', '__return_false' );
 
+/**
+ * Browser tab icon: the association's medallion, unless an administrator
+ * has set a Site Icon, which then takes over.
+ */
+function eares_theme_icon() {
+	if ( has_site_icon() ) {
+		return;
+	}
+	$icon = get_theme_file_uri( 'assets/images/icon.png' );
+	printf( '<link rel="icon" type="image/png" href="%s">' . "\n", esc_url( $icon ) );
+	printf( '<link rel="apple-touch-icon" href="%s">' . "\n", esc_url( $icon ) );
+}
+add_action( 'wp_head', 'eares_theme_icon' );
+add_action( 'login_head', 'eares_theme_icon' );
+add_action( 'admin_head', 'eares_theme_icon' );
+
+// The login screen shows the medallion, linking home, not the WordPress logo.
+add_action(
+	'login_enqueue_scripts',
+	function () {
+		$logo = eares_theme_image( 'logo' );
+		if ( $logo ) {
+			wp_add_inline_style(
+				'login',
+				sprintf( '#login h1 a{background-image:url("%s");background-size:contain;width:96px;height:96px}', esc_url( $logo ) )
+			);
+		}
+	}
+);
+add_filter( 'login_headerurl', fn() => home_url( '/' ) );
+add_filter( 'login_headertext', fn() => get_bloginfo( 'name' ) );
+
 // Visitors see "Είσοδος μελών" rather than the generic "Log in".
 add_filter(
 	'loginout',
