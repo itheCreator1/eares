@@ -27,7 +27,11 @@ if ( $rotate ) {
 	$img = imagerotate( $img, $rotate, 0 );
 }
 $width = min( (int) getenv( "WIDTH" ), imagesx( $img ) );
-imagewebp( imagescale( $img, $width, -1, IMG_BICUBIC ), "php://stdout", 78 );
+$img   = imagescale( $img, $width, -1, IMG_BICUBIC );
+// Keep the transparent background of a logo.
+imagealphablending( $img, false );
+imagesavealpha( $img, true );
+imagewebp( $img, "php://stdout", 78 );
 ' < "$src" > "$out"
 
 echo "$out: $(du -h "$out" | cut -f1)"

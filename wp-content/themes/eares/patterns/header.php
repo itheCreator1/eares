@@ -28,8 +28,8 @@
 	<div class="wp-block-group eares-masthead__inner">
 		<!-- wp:group {"className":"eares-brand","layout":{"type":"flex","flexWrap":"nowrap"}} -->
 		<div class="wp-block-group eares-brand">
-			<!-- wp:image {"width":"52px","height":"52px","className":"eares-brand__mark"} -->
-			<figure class="wp-block-image is-resized eares-brand__mark"><img src="<?php echo esc_url( get_theme_file_uri( 'assets/emblem.svg' ) ); ?>" alt="" style="width:52px;height:52px"/></figure>
+			<!-- wp:image {"width":"60px","height":"60px","className":"eares-brand__mark"} -->
+			<figure class="wp-block-image is-resized eares-brand__mark"><img src="<?php echo esc_url( eares_theme_image( 'logo' ) ); ?>" alt="" style="width:60px;height:60px"/></figure>
 			<!-- /wp:image -->
 			<!-- wp:group {"className":"eares-brand__text","layout":{"type":"flex","orientation":"vertical"}} -->
 			<div class="wp-block-group eares-brand__text">
