@@ -24,74 +24,59 @@ $id_of = function ( $login ) {
 	return $user->ID;
 };
 
-$admin   = (int) get_users(
+$admin  = (int) get_users(
 	array(
 		'role'   => 'administrator',
 		'fields' => 'ID',
 		'number' => 1,
 	)
 )[0];
-$manager = $id_of( 'test-usermanager' );
-$editor  = $id_of( 'test-editor' );
+$staff  = $id_of( 'test-staff' );
+$member = $id_of( 'test-member' );
 
-// Roles.
-$check( 'User Manager and Inactive roles exist', get_role( 'eares_user_manager' ) && get_role( 'eares_inactive' ) );
-$check( 'Editor has no unfiltered_html', ! get_role( 'editor' )->has_cap( 'unfiltered_html' ) );
-$check( 'User Manager has no unfiltered_html', ! get_role( 'eares_user_manager' )->has_cap( 'unfiltered_html' ) );
-$check( 'User Manager cannot edit an Administrator', ! user_can( $manager, 'edit_user', $admin ) );
-$check( 'User Manager cannot reset an Administrator\'s 2FA', ! user_can( $manager, 'eares_reset_2fa', $admin ) );
-$check( 'User Manager can edit an Editor', user_can( $manager, 'edit_user', $editor ) );
-$check( 'User Manager can reset an Editor\'s 2FA', user_can( $manager, 'eares_reset_2fa', $editor ) );
-wp_set_current_user( $manager );
-$check( 'User Manager cannot assign Administrator', ! isset( get_editable_roles()['administrator'] ) );
-wp_set_current_user( 0 );
+// Roles: exactly Administrator (staff) and Member.
+$roles = array_keys( wp_roles()->roles );
+sort( $roles );
+$check( 'Roles are administrator and eares_member', array( 'administrator', 'eares_member' ) === $roles );
+$check( 'Default role is Member', 'eares_member' === get_option( 'default_role' ) );
+$check( 'Registration is open', (bool) get_option( 'users_can_register' ) );
 
-// Inactive accounts cannot log in.
-$result = wp_authenticate( 'test-inactive', $password );
-$check( 'Inactive account is refused at login', is_wp_error( $result ) && 'eares_inactive' === $result->get_error_code() );
+// Members read private content and nothing more.
+$check( 'Member can read private posts and pages', user_can( $member, 'read_private_posts' ) && user_can( $member, 'read_private_pages' ) );
+$check( 'Member cannot write posts', ! user_can( $member, 'edit_posts' ) && ! user_can( $member, 'upload_files' ) );
+$check( 'Member cannot list users', ! user_can( $member, 'list_users' ) );
+$check( 'Staff can reset a Member\'s 2FA', user_can( $staff, 'eares_reset_2fa', $member ) );
+$check( 'Staff can reset another staff member\'s 2FA', user_can( $staff, 'eares_reset_2fa', $admin ) );
+$check( 'Nobody resets their own 2FA', ! user_can( $admin, 'eares_reset_2fa', $admin ) );
 
-// Email changed by someone else: only an Administrator may reset 2FA for a week.
-$old_email = get_userdata( $editor )->user_email;
-wp_set_current_user( $manager );
-wp_update_user(
+// Accounts without a role cannot log in.
+$result = wp_authenticate( 'test-norole', $password );
+$check( 'Account without a role is refused at login', is_wp_error( $result ) && 'eares_no_role' === $result->get_error_code() );
+
+// Members-only file from seed-content.sh.
+$private = get_page_by_path( 'praktika-ds-2026-09', OBJECT, 'post' );
+$check( 'Sample members-only post is private', $private && 'private' === $private->post_status );
+$pdf = $private ? get_children(
 	array(
-		'ID'         => $editor,
-		'user_email' => 'changed-' . $old_email,
+		'post_parent' => $private->ID,
+		'post_type'   => 'attachment',
+		'fields'      => 'ids',
 	)
-);
-$check( 'User Manager cannot reset 2FA right after changing the email', ! user_can( $manager, 'eares_reset_2fa', $editor ) );
-$check( 'Administrator still can', user_can( $admin, 'eares_reset_2fa', $editor ) );
-wp_update_user(
-	array(
-		'ID'         => $editor,
-		'user_email' => $old_email,
-	)
-);
-delete_user_meta( $editor, 'eares_email_changed_at' );
-wp_set_current_user( 0 );
+) : array();
+$pdf = $pdf ? (int) reset( $pdf ) : 0;
+$check( 'Members-only PDF is flagged and moved', $pdf && eares_is_members_only_file( $pdf ) && false !== strpos( get_attached_file( $pdf ), '/eares-members/' ) );
+$check( 'Members-only PDF URL goes through the login check', $pdf && false !== strpos( wp_get_attachment_url( $pdf ), 'eares_file=' . $pdf ) );
+$stale_href = wp_get_upload_dir()['baseurl'] . '/2026/09/praktika-ds-2026-09.pdf';
+$rendered   = $pdf ? do_blocks( "<!-- wp:file {\"id\":$pdf,\"href\":\"$stale_href\"} -->\n<div class=\"wp-block-file\"><a href=\"$stale_href\">PDF</a></div>\n<!-- /wp:file -->" ) : '';
+$check( 'File block inserted before protection links to the protected URL', false !== strpos( $rendered, 'eares_file=' . $pdf ) && false === strpos( $rendered, $stale_href ) );
 
 // Author archive slugs do not reveal logins.
 $leaks = array_filter( get_users(), fn( $u ) => sanitize_title( $u->user_login ) === $u->user_nicename );
 $check( 'No author slug equals a login name', ! $leaks );
 
 // Personal data.
-$check( 'Phone exporter registered', isset( apply_filters( 'wp_privacy_personal_data_exporters', array() )['eares-phone'] ) );
-$check( 'Phone eraser registered', isset( apply_filters( 'wp_privacy_personal_data_erasers', array() )['eares-phone'] ) );
-
-// Activity log: a User Manager sees nothing about Administrators.
-if ( class_exists( '\Simple_History\Log_Query' ) ) {
-	wp_set_current_user( $manager );
-	$rows = ( new \Simple_History\Log_Query() )->query( array( 'posts_per_page' => 1000 ) )['log_rows'];
-	$seen = array_filter(
-		$rows,
-		function ( $row ) use ( $admin ) {
-			$context = (array) $row->context;
-			return in_array( (string) $admin, array( $context['_user_id'] ?? '', $context['edited_user_id'] ?? '' ), true );
-		}
-	);
-	$check( 'User Manager sees no Administrator events in the log', ! $seen );
-	wp_set_current_user( 0 );
-}
+$check( 'Member-data exporter registered', isset( apply_filters( 'wp_privacy_personal_data_exporters', array() )['eares-member'] ) );
+$check( 'Member-data eraser registered', isset( apply_filters( 'wp_privacy_personal_data_erasers', array() )['eares-member'] ) );
 
 if ( $failures ) {
 	WP_CLI::error( "$failures check(s) failed." );
