@@ -1,0 +1,54 @@
+# ΕΑΡΕΣ — production override. Layer it on top of docker-compose.yml by
+# putting this in the server's .env (every docker compose command and every
+# script then picks it up):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+#
+# What changes compared to local development:
+#   - Caddy terminates TLS on ports 80/443 with an automatic Let's Encrypt
+#     certificate for SITE_DOMAIN and adds the security headers (deploy/Caddyfile).
+#   - WordPress publishes no port: the only way in is through Caddy, so
+#     trusting X-Forwarded-For/-Proto (EARES_TRUST_PROXY) is safe.
+#   - Mailpit is not started; mail goes to the SMTP_* provider in .env.
+#
+# See "Deploying to production" in README.md.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on: [wordpress]
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [web]
+    logging: *logging
+
+  wordpress:
+    ports: !reset []
+    environment:
+      EARES_TRUST_PROXY: "1"
+      EARES_FORCE_SSL_ADMIN: "1"
+
+  mailpit:
+    profiles: [dev]
+
+volumes:
+  # Certificates and ACME account: keep this volume, or Caddy re-requests
+  # certificates on every rebuild and can hit Let's Encrypt rate limits.
+  caddy_data:
+  caddy_config:

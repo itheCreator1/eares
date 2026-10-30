@@ -67,3 +67,12 @@ require_changed_passwords() {
     exit 1
   fi
 }
+
+# Mailpit isn't started in production (docker-compose.prod.yml), so mail would
+# silently go nowhere, including the emailed 2FA codes.
+require_real_smtp() {
+  if [[ "${WP_ENVIRONMENT_TYPE:-local}" == "production" && "${SMTP_HOST:-mailpit}" == "mailpit" ]]; then
+    echo "Refusing to run: set SMTP_HOST (and the other SMTP_* settings) in .env to a real mail provider for production." >&2
+    exit 1
+  fi
+}

@@ -1,5 +1,5 @@
 {
-    "name": "eares/cms2",
+    "name": "eares/eares",
     "description": "ΕΑΡΕΣ WordPress site: coding-standard tooling only (the site itself runs in Docker).",
     "type": "project",
     "license": "proprietary",

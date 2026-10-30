@@ -6,6 +6,7 @@
 source "$(dirname "$0")/lib.sh"
 
 require_changed_passwords
+require_real_smtp
 wait_for_wordpress
 
 if ! wp core is-installed 2>/dev/null; then
@@ -91,4 +92,8 @@ wp eval-file - < scripts/setup-content.php
 "$ROOT/scripts/update.sh"
 
 echo
-echo "Done. Site: $WP_URL  ·  Admin: $WP_URL/wp-admin  ·  Mail: http://localhost:${MAILPIT_PORT:-8025}"
+if [[ "${SMTP_HOST:-mailpit}" == "mailpit" ]]; then
+  echo "Done. Site: $WP_URL  ·  Admin: $WP_URL/wp-admin  ·  Mail: http://localhost:${MAILPIT_PORT:-8025}"
+else
+  echo "Done. Site: $WP_URL  ·  Admin: $WP_URL/wp-admin"
+fi

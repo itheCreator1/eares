@@ -1,0 +1,35 @@
+# ΕΑΡΕΣ — production reverse proxy (docker-compose.prod.yml).
+#
+# Caddy gets and renews the Let's Encrypt certificate for SITE_DOMAIN by
+# itself, redirects HTTP to HTTPS, and is the only way to reach WordPress:
+# the wordpress container publishes no port in production.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	# Matches post_max_size in deploy/php/eares.ini.
+	request_body {
+		max_size 64MB
+	}
+
+	header {
+		# One year of HTTPS-only. Not includeSubDomains/preload: other
+		# subdomains of the domain may not serve HTTPS, and preload is hard to undo.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		# Only the framing/plugin/base-URI parts of CSP: a script-src policy
+		# would break the block editor.
+		Content-Security-Policy "frame-ancestors 'self'; object-src 'none'; base-uri 'self'"
+		-Server
+		-X-Powered-By
+	}
+
+	reverse_proxy wordpress:80
+}
