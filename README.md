@@ -18,8 +18,8 @@ The school has been sending graduates out into the world since 1844. The associa
 | **People** | Six roles, including a custom **User Manager** who runs the membership desk without ever touching an Administrator |
 | **Security** | Optional two-factor login, login throttling, no XML-RPC, no application passwords, no leaking of login names, no file edits from the browser |
 | **Public site** | A custom block theme with self-hosted Greek fonts, the association's own photos, and a front page built like a bulletin board |
-| **Operations** | A production override with automatic HTTPS and security headers; update and backup scripts with a documented restore; setup that you can run as often as you like |
-| **Quality** | CI runs coding standards, shellcheck and a full end-to-end smoke test on a fresh stack for every push |
+| **Operations** | A production override with automatic HTTPS and security headers; exact core and plugin versions in `versions.env`; nightly backups with retention and an encrypted off-site copy; a restore script that CI proves on every push; setup that you can run as often as you like |
+| **Quality** | CI runs coding standards, shellcheck, a full end-to-end smoke test on a fresh stack, and a wipe-and-restore of the backup for every push |
 
 ---
 
@@ -195,6 +195,7 @@ Edit `.env`:
 | `WP_ENVIRONMENT_TYPE` | `production` |
 | Every `change-me` password | Long random values: `openssl rand -base64 24` |
 | `SMTP_*`, `MAIL_FROM` | Your mail provider's settings, and a sender address on your own domain |
+| `BACKUP_REMOTE`, `BACKUP_PING_URL` | The encrypted off-site remote and a monitoring URL ([Backup and restore](#backup-and-restore)) |
 
 Then:
 
@@ -244,28 +245,58 @@ The `Server` and `X-Powered-By` headers are removed, and responses are compresse
 
 ### Updating
 
-Neither the dashboard nor a newer Docker image updates WordPress core: core lives in the `wp_data` volume. There's exactly one way in, and it comes with a safety net. At least once a month, and whenever a security release comes out:
+Every server runs exactly the WordPress core and plugin versions in [`versions.env`](versions.env), and so does CI, so what was tested is what runs. Neither the dashboard nor a newer Docker image changes them: core lives in the `wp_data` volume, and `DISALLOW_FILE_MODS` keeps the browser out. At least once a month, and whenever a security release comes out:
 
-```sh
-scripts/backup.sh
-scripts/update.sh
-```
+1. `scripts/update.sh --check` lists releases newer than the pins. It changes nothing.
+2. Bump the numbers in `versions.env` in a pull request. CI builds the site with exactly those versions and runs every check. When core changes, bump the `wordpress` image tag in `docker-compose.yml` to the same version, so a fresh volume starts on it.
+3. Merge, then on the server: `git pull && scripts/update.sh`. Outside `local` it takes a backup first.
 
-A new `wordpress` image tag in `docker-compose.yml` updates PHP and Apache only.
+`update.sh` and `setup.sh` never downgrade. If the server is somehow ahead of `versions.env`, they say so and leave it, because older code can't be trusted with a database that newer code already migrated. Translations aren't pinned; they follow the installed versions.
+
+The PHP coding-standard tools are pinned too, by `composer.lock`.
 
 ### Backup and restore
 
-`scripts/backup.sh` writes `backups/db-<time>.sql.gz` and `backups/uploads-<time>.tar.gz`. Copy them off the server; a backup that lives next to the thing it backs up is a comforting story, not a backup. Core and plugins aren't included, because `setup.sh` reinstalls them.
+`scripts/backup.sh` writes one set per run into `backups/`: `db-<time>.sql.gz`, `uploads-<time>.tar.gz` and `checksums-<time>.sha256`. Each file is checked before it counts (`gzip -t`, `tar -t`), and the folder is readable by its owner only, because the dump holds members' emails, phones and password hashes. Core and plugins aren't included, because `setup.sh` reinstalls them at the versions in `versions.env`.
 
-To restore into a running stack:
+Then it:
+- **copies the set off-site** when `BACKUP_REMOTE` is set in `.env`. A backup that lives next to the thing it backs up is a comforting story, not a backup;
+- **prunes** sets older than `BACKUP_KEEP_DAYS` (14) locally and `BACKUP_REMOTE_KEEP_DAYS` (90) off-site, only ever touching its own files;
+- **pings** `BACKUP_PING_URL`, if set, so a monitor such as healthchecks.io tells you when backups stop.
+
+**Off-site, encrypted.** The copy goes through [rclone](https://rclone.org), which speaks to almost every storage provider (S3, Backblaze B2, SFTP, Google Drive...). It runs in its own container, so nothing needs installing on the server. Configure a storage remote and, on top of it, a `crypt` remote, so the provider only ever sees encrypted files:
 
 ```sh
-set -a; source .env; set +a
-gunzip -c backups/db-<time>.sql.gz \
-  | docker compose exec -T -e MYSQL_PWD="$DB_ROOT_PASSWORD" db mariadb -uroot "$DB_NAME"
-docker compose exec -T -u www-data wordpress tar -C /var/www/html/wp-content -xz \
-  < backups/uploads-<time>.tar.gz
+mkdir -p rclone
+docker compose run --rm --user "$(id -u):$(id -g)" rclone config   # 1. your storage, e.g. "b2"   2. a "crypt" remote over b2:eares-backups, e.g. "eares-offsite"
 ```
+
+Then set `BACKUP_REMOTE=eares-offsite:` in `.env` and run `scripts/backup.sh` once by hand. **Keep a copy of `rclone/rclone.conf` (or at least the crypt passwords) somewhere other than the server**: without them the off-site backups can't be decrypted. `rclone/` is not in git.
+
+**Every night.** On the server, with the checkout in `/srv/eares` and a user `eares` that may run docker (edit the two unit files if yours differ):
+
+```sh
+sudo cp deploy/systemd/eares-backup.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now eares-backup.timer
+systemctl list-timers eares-backup.timer        # next run
+journalctl -u eares-backup.service              # past runs
+```
+
+No systemd? A cron line does the same: `30 3 * * * cd /srv/eares && scripts/backup.sh >> backups/backup.log 2>&1`.
+
+**Restore.** `scripts/restore.sh` checks the checksums, asks you to type the backup time, then replaces the database and the uploads entirely. Run `scripts/setup.sh` straight after: on a fresh stack it reinstalls core and plugins, and it re-applies the settings.
+
+```sh
+scripts/restore.sh                      # newest set in backups/
+scripts/restore.sh 20261030-033000      # a specific set
+scripts/restore.sh --remote             # newest set off-site (e.g. the server is gone)
+scripts/setup.sh
+```
+
+To rebuild on a new server: clone the repo, put back `.env` and `rclone/rclone.conf`, `docker compose up -d`, then `scripts/restore.sh --remote` and `scripts/setup.sh`.
+
+CI does exactly that on every push: it backs up the test site to an off-site remote, wipes every container and volume, comes back as `production` with new passwords, restores from the remote, runs `setup.sh`, and checks that posts, users, settings and every uploaded file match, before running the smoke test again.
 
 ### Email
 
@@ -287,7 +318,7 @@ The smoke test drives a real running site and checks:
 - the theme and its pages;
 - the login lockout.
 
-[CI](.github/workflows/ci.yml) runs all of it on every push, on a stack built from nothing, and finishes by taking a backup.
+[CI](.github/workflows/ci.yml) runs all of it on every push, on a stack built from nothing, and finishes with the backup-wipe-restore test described under [Backup and restore](#backup-and-restore).
 
 ---
 
@@ -306,16 +337,19 @@ The smoke test drives a real running site and checks:
 | `wp-content/mu-plugins/eares-profile.php` | A private phone field (not in the API; included in personal-data export and erasure) and a simpler profile screen |
 | `wp-content/mu-plugins/eares-mail.php` | SMTP from the `.env` settings |
 | `wp-content/themes/eares/` | The public site's block theme |
-| `scripts/setup.sh` | Installs and configures everything: core, the Greek language pack, plugins, settings, the theme and the site structure. Refuses the `change-me` passwords outside `local`. |
+| `scripts/setup.sh` | Installs and configures everything: core and plugins at the `versions.env` versions, the Greek language pack, settings, the theme and the site structure. Refuses the `change-me` passwords outside `local`, and never hides a live production site from search engines on a re-run. |
 | `scripts/setup-content.php` | Categories, menu pages, the static front page and page header photos (run by `setup.sh`) |
-| `scripts/update.sh` | Updates core, plugins and translations |
-| `scripts/backup.sh` | Backs up the database and uploads into `backups/` |
+| `versions.env` | The exact WordPress core and plugin versions every install runs |
+| `scripts/update.sh` | Brings core and plugins to `versions.env` (after a backup), refreshes translations; `--check` lists newer releases |
+| `scripts/backup.sh` | Backs up the database and uploads into `backups/`, copies them off-site, prunes old sets |
+| `scripts/restore.sh` | Puts a backup back, from `backups/` or from off-site |
+| `deploy/systemd/` | The nightly backup timer |
 | `scripts/optimize-photo.sh` | Resizes a photo to WebP for the theme |
 | `scripts/seed-users.sh`, `scripts/seed-content.sh` | Fake test users and sample posts; both refuse to run in production |
 | `scripts/smoke-test.sh` | End-to-end checks against a running stack |
 | `docs/site-map.md` | The old site mapped onto the new one, and how editors handle announcements, issues and events |
 | `docs/2fa-odigos.md` | The members' 2FA guide, in Greek |
-| `.github/workflows/ci.yml` | CI: PHP syntax, PHPCS, shellcheck, then the full stack with the smoke test and a backup |
+| `.github/workflows/ci.yml` | CI: PHP syntax, PHPCS, shellcheck, then the full stack with the smoke test, a backup, a wipe and a restore |
 
 ---
 
@@ -329,9 +363,9 @@ Greek is the site's language. Anyone can switch their own admin screens to Engli
 
 - [ ] Check that the Two-Factor plugin's Greek translation is complete. If it isn't, ship a Greek `.po`/`.mo` file.
 - [ ] Choose a production SMTP provider and set `SMTP_*` in `.env`. The email 2FA option depends on reliable delivery.
-- [ ] Set `WP_ENVIRONMENT_TYPE=production` and `blog_public=1`, and change every `change-me` password (`setup.sh` refuses them outside `local` anyway).
+- [ ] Set `WP_ENVIRONMENT_TYPE=production` and change every `change-me` password (`setup.sh` refuses them outside `local` anyway). A new production site starts hidden from search engines; on launch day tick it visible in Settings > Reading (or set `BLOG_PUBLIC=1` in `.env`). Re-running `setup.sh` won't undo that.
 - [ ] Deploy with the production override ([Deploying to production](#deploying-to-production)). It serves the site over HTTPS only and sets `FORCE_SSL_ADMIN` and `TRUST_PROXY` for you. If you use your own proxy instead, set both in `.env` and make sure WordPress can only be reached through it.
 - [ ] Check the headers once the site is live, for example at [securityheaders.com](https://securityheaders.com/) and [SSL Labs](https://www.ssllabs.com/ssltest/).
-- [ ] Schedule `scripts/backup.sh` (for example, a nightly cron job) and copy the files off the server.
-- [ ] Put `scripts/update.sh` on a monthly calendar.
+- [ ] Set up the encrypted off-site remote and `BACKUP_REMOTE`, enable `eares-backup.timer`, set `BACKUP_PING_URL`, and keep a copy of `rclone/rclone.conf` off the server ([Backup and restore](#backup-and-restore)). Then do one real `scripts/restore.sh --remote` on a spare machine.
+- [ ] Put `scripts/update.sh --check` on a monthly calendar ([Updating](#updating)).
 - [ ] Replace the "to be completed" placeholders (Προς συμπλήρωση) on the pages: the history, the board members, the subscription amount and IBAN, the contact details.

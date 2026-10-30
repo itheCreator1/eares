@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the ΕΑΡΕΣ backup every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Athens
+# Catch up after the server was off at 03:30.
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

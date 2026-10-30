@@ -12,6 +12,8 @@ fi
 set -a
 # shellcheck disable=SC1091
 source .env
+# shellcheck source=../versions.env
+source versions.env
 set +a
 
 # Run wp-cli inside the one-shot wpcli container. EARES_PASSWORD, when set
@@ -19,6 +21,46 @@ set +a
 # variable, so passwords never show up on a command line or in output.
 wp() {
   docker compose --progress quiet run --rm -T -e EARES_PASSWORD wpcli wp "$@"
+}
+
+# rclone in its one-shot container, as the calling user so ./backups stays theirs.
+rclone() {
+  docker compose --progress quiet run --rm -T --user "$(id -u):$(id -g)" rclone "$@"
+}
+
+version_lt() { # a, b: true when version a is older than b
+  [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+}
+
+# Bring core and the plugins in versions.env up to exactly the pinned
+# versions. Never downgrades: a newer install is reported, not touched, because
+# going back could meet a database already migrated forward.
+apply_pinned_versions() {
+  local current entry slug version
+  current="$(wp core version)"
+  if version_lt "$current" "$WP_CORE_VERSION"; then
+    echo "WordPress core $current -> $WP_CORE_VERSION"
+    wp core update --version="$WP_CORE_VERSION"
+  elif [[ "$current" != "$WP_CORE_VERSION" ]]; then
+    warn "WordPress core is $current, newer than WP_CORE_VERSION=$WP_CORE_VERSION in versions.env. Update the pin."
+  fi
+  wp core update-db
+
+  for entry in $WP_PLUGINS; do
+    slug="${entry%@*}" version="${entry#*@}"
+    if ! wp plugin is-installed "$slug"; then
+      wp plugin install "$slug" --version="$version"
+    else
+      current="$(wp plugin get "$slug" --field=version)"
+      if version_lt "$current" "$version"; then
+        echo "Plugin $slug $current -> $version"
+        wp plugin update "$slug" --version="$version"
+      elif [[ "$current" != "$version" ]]; then
+        warn "Plugin $slug is $current, newer than $version in versions.env. Update the pin."
+      fi
+    fi
+    wp plugin activate "$slug"
+  done
 }
 
 set_password() { # login, password
