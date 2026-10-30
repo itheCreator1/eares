@@ -1,6 +1,6 @@
-# cms2 — EARES WordPress
+# EARES WordPress
 
-[![CI](https://github.com/itheCreator1/cms2/actions/workflows/ci.yml/badge.svg)](https://github.com/itheCreator1/cms2/actions/workflows/ci.yml)
+[![CI](https://github.com/itheCreator1/eares/actions/workflows/ci.yml/badge.svg)](https://github.com/itheCreator1/eares/actions/workflows/ci.yml)
 
 **The new home on the web for EARES, the Rizarios Ecclesiastical School Alumni Association** (ΕΑΡΕΣ, Ένωση Αποφοίτων Ριζαρείου Εκκλησιαστικής Σχολής).
 
@@ -18,7 +18,7 @@ The school has been sending graduates out into the world since 1844. The associa
 | **People** | Six roles, including a custom **User Manager** who runs the membership desk without ever touching an Administrator |
 | **Security** | Optional two-factor login, login throttling, no XML-RPC, no application passwords, no leaking of login names, no file edits from the browser |
 | **Public site** | A custom block theme with self-hosted Greek fonts, the association's own photos, and a front page built like a bulletin board |
-| **Operations** | Update and backup scripts with a documented restore; setup that you can run as often as you like |
+| **Operations** | A production override with automatic HTTPS and security headers; update and backup scripts with a documented restore; setup that you can run as often as you like |
 | **Quality** | CI runs coding standards, shellcheck and a full end-to-end smoke test on a fresh stack for every push |
 
 ---
@@ -141,13 +141,13 @@ There's also a guard against the classic takeover: "change the email, reset the 
 - **Login names stay private.** Author pages use a `member-…` address (`/author/member-5a5385c0b6/`) instead of the login name. Anonymous visitors can't list users through the API, the `?author=N` trick or the sitemap.
 - **The side doors are closed.** XML-RPC is off, and so are application passwords, which would otherwise let someone log in without 2FA.
 
-Behind a reverse proxy, set `TRUST_PROXY=1` in `.env`. Otherwise every visitor seems to come from the proxy's IP, and one attacker could lock everybody out.
+Behind a reverse proxy, WordPress must trust it (`TRUST_PROXY=1`); the production override sets this for you. Otherwise every visitor seems to come from the proxy's IP, and one attacker could lock everybody out.
 
 ### The browser can look, but it can't touch
 
 `wp-config` forbids editing and installing code from the dashboard (`DISALLOW_FILE_EDIT`, `DISALLOW_FILE_MODS`). Only wp-cli, run by the scripts, can change WordPress core, plugins or the theme. A stolen admin password can do damage to content, which backups fix, but it can't plant code on the server.
 
-The database sits on a Docker network with no internet access, and every port listens on `127.0.0.1` only.
+The database sits on a Docker network with no internet access. Locally every port listens on `127.0.0.1` only; in production the only open ports are Caddy's 80 and 443.
 
 ---
 
@@ -161,6 +161,82 @@ Two extra columns you can sort by:
 The **No login for 12+ months** view (Χωρίς σύνδεση 12+ μήνες) lists just the flagged accounts. Nothing happens to them automatically; a person decides.
 
 The activity log (Simple History) is visible to Administrators and User Managers only, and User Managers don't see events by or about Administrators and other User Managers.
+
+---
+
+## Deploying to production
+
+Production is the same stack with one override file on top, [`docker-compose.prod.yml`](docker-compose.prod.yml). It changes three things:
+
+- **HTTPS in front.** [Caddy](https://caddyserver.com/) listens on ports 80 and 443, gets and renews a Let's Encrypt certificate for your domain by itself, and redirects plain HTTP to HTTPS. Its configuration is [`deploy/Caddyfile`](deploy/Caddyfile).
+- **WordPress is only reachable through Caddy.** It publishes no port at all, and it's told to trust the proxy (`TRUST_PROXY`) and require HTTPS for logins (`FORCE_SSL_ADMIN`).
+- **No Mailpit.** Mail goes to the real SMTP provider set in `.env`. `setup.sh` refuses to run in production while `SMTP_HOST` still says `mailpit`.
+
+### What you need
+
+- A Linux server with Docker and Compose, with ports 80 and 443 open to the internet (and nothing else listening on them).
+- A DNS `A` (and `AAAA`, if the server has IPv6) record pointing the domain at the server. Caddy can't get a certificate until it does.
+- An SMTP account with a mail provider.
+
+### First deployment
+
+```sh
+git clone https://github.com/itheCreator1/eares.git && cd eares
+cp .env.example .env
+```
+
+Edit `.env`:
+
+| Setting | Value |
+|---|---|
+| `COMPOSE_FILE` | Uncomment it: `docker-compose.yml:docker-compose.prod.yml`. Every `docker compose` command and every script now uses the production override, so you never type `-f`. |
+| `SITE_DOMAIN`, `ACME_EMAIL` | The domain (e.g. `eares.gr`) and an address Let's Encrypt can warn about expiring certificates |
+| `WP_URL` | `https://` plus the domain, exactly. WordPress stores it on first install. |
+| `WP_ENVIRONMENT_TYPE` | `production` |
+| Every `change-me` password | Long random values: `openssl rand -base64 24` |
+| `SMTP_*`, `MAIL_FROM` | Your mail provider's settings, and a sender address on your own domain |
+
+Then:
+
+```sh
+docker compose up -d --wait   # Caddy, WordPress, MariaDB
+scripts/setup.sh
+```
+
+Open `https://<your domain>/wp-admin`, log in, and check that a password-reset email actually arrives. Then work through [Before going live](#before-going-live).
+
+### Day to day on the server
+
+Everything under [Running it](#running-it) works the same way, because `COMPOSE_FILE` in `.env` applies the override everywhere. To deploy a new version of the code:
+
+```sh
+git pull
+docker compose up -d --wait   # recreates only the containers whose config changed
+scripts/setup.sh              # applies any new settings, roles or content structure
+```
+
+The theme and the mu-plugins are mounted straight from the checkout, so `git pull` alone puts new code live; `setup.sh` catches up the database side.
+
+### What the proxy adds
+
+Every response carries:
+
+| Header | Why |
+|---|---|
+| `Strict-Transport-Security: max-age=31536000` | Browsers refuse plain HTTP for a year. Deliberately without `includeSubDomains` and `preload`, which would force HTTPS on every other subdomain too and are hard to undo. |
+| `X-Content-Type-Options: nosniff` | No guessing of file types, so an upload can't be run as a script |
+| `X-Frame-Options: SAMEORIGIN` and CSP `frame-ancestors 'self'` | Other sites can't frame the login page (clickjacking) |
+| CSP `object-src 'none'; base-uri 'self'` | No plugins, no hijacked base URL. A full script policy would break the block editor, so there isn't one. |
+| `Referrer-Policy: strict-origin-when-cross-origin` | Other sites see only the domain, never the full address |
+| `Permissions-Policy` | No camera, microphone, location, payment or USB access for any page |
+
+The `Server` and `X-Powered-By` headers are removed, and responses are compressed.
+
+### Limits and logs
+
+- **Uploads** go up to 64 MB per file, enough for a full issue of *The Rizareitis* as a PDF or a photo straight off a phone. The PHP side is [`deploy/php/eares.ini`](deploy/php/eares.ini), the proxy side is `request_body` in the Caddyfile; raise both together.
+- **Container logs** rotate at 10 MB, keeping five files per container, so they can't quietly fill the disk. `docker compose logs caddy` shows the access log.
+- **Certificates** live in the `caddy_data` volume. Keep it: `docker compose down -v` deletes it along with the database, and Let's Encrypt limits how often you can ask for a new certificate.
 
 ---
 
@@ -219,7 +295,10 @@ The smoke test drives a real running site and checks:
 
 | Path | What it does |
 |---|---|
-| `docker-compose.yml` | The services, with pinned images. The database is on an internal network, and ports bind to 127.0.0.1. The `wp-config` hardening is set here: file edits off, code installs only from wp-cli, `FORCE_SSL_ADMIN`, and HTTPS detection behind a proxy. |
+| `docker-compose.yml` | The services, with pinned images. The database is on an internal network, and ports bind to 127.0.0.1. The `wp-config` hardening is set here: file edits off, code installs only from wp-cli, `FORCE_SSL_ADMIN`, and HTTPS detection behind a proxy. Container logs rotate. |
+| `docker-compose.prod.yml` | The production override: Caddy with HTTPS, WordPress reachable only through it, no Mailpit |
+| `deploy/Caddyfile` | The reverse proxy: TLS, HTTP→HTTPS redirect, security headers, upload size limit |
+| `deploy/php/eares.ini` | PHP upload limits (64 MB) and no PHP version in headers |
 | `wp-content/mu-plugins/eares-roles.php` | The custom roles and the rules that stop anyone climbing above their role |
 | `wp-content/mu-plugins/eares-users-admin.php` | Last login, the 2FA and last-login columns, the Reset 2FA action and its 7-day guard, the Inactive login block, the allowed 2FA methods, and who sees what in the activity log |
 | `wp-content/mu-plugins/eares-login-limit.php` | Login throttling |
@@ -251,7 +330,8 @@ Greek is the site's language. Anyone can switch their own admin screens to Engli
 - [ ] Check that the Two-Factor plugin's Greek translation is complete. If it isn't, ship a Greek `.po`/`.mo` file.
 - [ ] Choose a production SMTP provider and set `SMTP_*` in `.env`. The email 2FA option depends on reliable delivery.
 - [ ] Set `WP_ENVIRONMENT_TYPE=production` and `blog_public=1`, and change every `change-me` password (`setup.sh` refuses them outside `local` anyway).
-- [ ] Put the site behind HTTPS and set `FORCE_SSL_ADMIN=1`. If a reverse proxy terminates TLS, also set `TRUST_PROXY=1` and make sure WordPress can only be reached through the proxy.
+- [ ] Deploy with the production override ([Deploying to production](#deploying-to-production)). It serves the site over HTTPS only and sets `FORCE_SSL_ADMIN` and `TRUST_PROXY` for you. If you use your own proxy instead, set both in `.env` and make sure WordPress can only be reached through it.
+- [ ] Check the headers once the site is live, for example at [securityheaders.com](https://securityheaders.com/) and [SSL Labs](https://www.ssllabs.com/ssltest/).
 - [ ] Schedule `scripts/backup.sh` (for example, a nightly cron job) and copy the files off the server.
 - [ ] Put `scripts/update.sh` on a monthly calendar.
 - [ ] Replace the "to be completed" placeholders (Προς συμπλήρωση) on the pages: the history, the board members, the subscription amount and IBAN, the contact details.

@@ -13,6 +13,17 @@
 #
 # Site:    http://localhost:8080  (WP_PORT)
 # Mailpit: http://localhost:8025  (MAILPIT_PORT) — every email the site sends lands here.
+#
+# Production: docker-compose.prod.yml layers Caddy (HTTPS) on top and drops
+# Mailpit; see "Deploying to production" in README.md.
+
+# Rotate container logs so they can't fill the disk (json-file keeps them
+# forever by default).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 x-wp-env: &wp-env
   WORDPRESS_DB_HOST: db:3306
@@ -50,6 +61,7 @@ services:
   db:
     image: mariadb:11.4
     restart: unless-stopped
+    logging: *logging
     environment:
       MARIADB_DATABASE: ${DB_NAME}
       # The application user only has privileges on MARIADB_DATABASE.
@@ -68,6 +80,7 @@ services:
   wordpress:
     image: wordpress:7.1-php8.3-apache
     restart: unless-stopped
+    logging: *logging
     depends_on:
       db:
         condition: service_healthy
@@ -79,6 +92,8 @@ services:
       - wp_data:/var/www/html
       - ./wp-content/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
       - ./wp-content/themes/eares:/var/www/html/wp-content/themes/eares:ro
+      # Upload limits (PDF issues, phone photos) and expose_php.
+      - ./deploy/php/eares.ini:/usr/local/etc/php/conf.d/eares.ini:ro
     networks: [internal, web]
 
   # One-shot wp-cli container used by scripts/*.sh (not started by `up`).
@@ -103,6 +118,7 @@ services:
   mailpit:
     image: axllent/mailpit:v1.31
     restart: unless-stopped
+    logging: *logging
     ports:
       - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
     networks: [internal, web]
@@ -110,6 +126,7 @@ services:
   adminer:
     image: adminer:6.1.1
     profiles: [tools]
+    logging: *logging
     depends_on: [db]
     environment:
       ADMINER_DEFAULT_SERVER: db
