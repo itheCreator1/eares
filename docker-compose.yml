@@ -4,12 +4,15 @@
 #   scripts/setup.sh              install/configure WordPress (idempotent)
 #   scripts/seed-users.sh         create one fake test user per role
 #   scripts/update.sh             update WordPress core, plugins, translations
-#   scripts/backup.sh             database + uploads into ./backups/
+#   scripts/backup.sh             database + uploads into ./backups/, then off-site
+#   scripts/restore.sh            put a backup back
 #   docker compose --profile tools up -d adminer   optional DB browser
 #
 # Image tags are pinned. Bumping the wordpress image changes PHP and Apache
 # only: WordPress core lives in the wp_data volume and is updated by
-# scripts/update.sh, never by pulling a newer image.
+# scripts/update.sh to the version in versions.env, never by pulling a newer
+# image. Keep the image's core version equal to WP_CORE_VERSION, so a fresh
+# volume starts on the pinned release.
 #
 # Site:    http://localhost:8080  (WP_PORT)
 # Mailpit: http://localhost:8025  (MAILPIT_PORT) — every email the site sends lands here.
@@ -78,7 +81,7 @@ services:
       retries: 30
 
   wordpress:
-    image: wordpress:7.1-php8.3-apache
+    image: wordpress:7.1.4-php8.3-apache
     restart: unless-stopped
     logging: *logging
     depends_on:
@@ -122,6 +125,22 @@ services:
     ports:
       - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
     networks: [internal, web]
+
+  # One-shot rclone container used by backup.sh/restore.sh for the off-site
+  # copy (BACKUP_REMOTE in .env). Its config, with the remote's credentials,
+  # lives in ./rclone/rclone.conf on the host, outside git.
+  rclone:
+    image: rclone/rclone:1.75.2
+    profiles: [backup]
+    logging: *logging
+    environment:
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+      XDG_CACHE_HOME: /tmp
+    volumes:
+      - ./backups:/backups
+      # Writable: OAuth remotes (Google Drive, OneDrive) refresh their token here.
+      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+    networks: [web]
 
   adminer:
     image: adminer:6.1.1

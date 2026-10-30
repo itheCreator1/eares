@@ -9,7 +9,14 @@ require_changed_passwords
 require_real_smtp
 wait_for_wordpress
 
+if [[ -n "${BLOG_PUBLIC:-}" && "$BLOG_PUBLIC" != [01] ]]; then
+  echo "BLOG_PUBLIC in .env must be empty, 0 or 1 (got '$BLOG_PUBLIC')." >&2
+  exit 1
+fi
+
+fresh_install=0
 if ! wp core is-installed 2>/dev/null; then
+  fresh_install=1
   echo "Installing WordPress..."
   # The real password is set by set_password (lib.sh), never on a command line.
   wp core install \
@@ -34,14 +41,11 @@ echo "Plugins..."
 for bundled in akismet hello; do
   if wp plugin is-installed "$bundled"; then wp plugin delete "$bundled"; fi
 done
-for slug in two-factor simple-history; do
-  if ! wp plugin is-installed "$slug"; then
-    wp plugin install "$slug"
-  fi
-  wp plugin activate "$slug"
-done
+# Core and plugins at the exact versions in versions.env.
+apply_pinned_versions
 wp language plugin install --all el || warn "Some plugin translations could not be installed."
 wp language core update || warn "Language pack update failed."
+wp language plugin update --all || warn "Plugin translation update failed."
 
 echo "Site settings..."
 wp option update blogname "$WP_TITLE"
@@ -53,7 +57,17 @@ wp option update timezone_string "Europe/Athens"
 wp option update date_format "j F Y"
 wp option update time_format "H:i"
 wp option update start_of_week 1
-wp option update blog_public 0          # local dev: keep search engines out
+# Search engines. local and staging are always hidden. A new production site
+# starts hidden too, and after that the setting is the owner's (Settings >
+# Reading): re-runs leave it alone, so a live site is never pulled out of
+# search by a routine setup.sh. BLOG_PUBLIC=0/1 in .env overrides all of this.
+if [[ -n "${BLOG_PUBLIC:-}" ]]; then
+  wp option update blog_public "$BLOG_PUBLIC"
+elif [[ "${WP_ENVIRONMENT_TYPE:-local}" != "production" ]] || (( fresh_install )); then
+  wp option update blog_public 0
+else
+  echo "  blog_public left at $(wp option get blog_public) (production; set BLOG_PUBLIC in .env to change it)"
+fi
 wp option update default_pingback_flag 0
 wp option update default_ping_status closed
 wp rewrite structure '/%postname%/'
@@ -89,7 +103,8 @@ mapfile -t old_themes < <(wp theme list --field=name | grep '^twenty' | sort | h
 if (( ${#old_themes[@]} )); then wp theme delete "${old_themes[@]}"; fi
 wp eval-file - < scripts/setup-content.php
 
-"$ROOT/scripts/update.sh"
+wp core version --extra
+wp plugin list --fields=name,status,version
 
 echo
 if [[ "${SMTP_HOST:-mailpit}" == "mailpit" ]]; then

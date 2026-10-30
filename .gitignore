@@ -3,4 +3,4 @@
 /backups/
 .DS_Store
 vendor/
-composer.lock
+/rclone/

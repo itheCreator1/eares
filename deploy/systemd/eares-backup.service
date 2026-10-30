@@ -1,0 +1,14 @@
+# Nightly ΕΑΡΕΣ backup: scripts/backup.sh (database + uploads, off-site copy,
+# pruning). Started by eares-backup.timer. Install: README, "Backup and restore".
+[Unit]
+Description=ΕΑΡΕΣ backup (database, uploads, off-site copy)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The checkout on the server. The user must be allowed to run docker.
+WorkingDirectory=/srv/eares
+User=eares
+ExecStart=/srv/eares/scripts/backup.sh

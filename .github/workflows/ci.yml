@@ -27,12 +27,17 @@ jobs:
         run: |
           composer install --no-interaction --no-progress
           vendor/bin/phpcs
+      - name: composer.lock matches composer.json
+        run: composer validate --no-check-publish
       - name: Shell scripts (shellcheck)
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh .github/ci/*.sh
 
   smoke:
     runs-on: ubuntu-24.04
     needs: lint
+    defaults:
+      run:
+        shell: bash  # -eo pipefail, so `fingerprint.sh | tee` fails when fingerprint.sh does
     steps:
       - uses: actions/checkout@v4
       - name: Start the stack
@@ -47,8 +52,30 @@ jobs:
           scripts/seed-content.sh
       - name: Smoke test
         run: scripts/smoke-test.sh
-      - name: Backup
-        run: scripts/backup.sh
+      - name: Backup, with an off-site copy to a local rclone remote
+        run: |
+          mkdir -p rclone && touch rclone/rclone.conf
+          echo "BACKUP_REMOTE=:local:/config/rclone/offsite" >> .env
+          # A launched site: the restore below must keep it in search engines.
+          docker compose --progress quiet run --rm -T wpcli wp option update blog_public 1
+          .github/ci/fingerprint.sh | tee fingerprint-before.txt
+          scripts/backup.sh
+      - name: Restore test (wipe everything, restore from off-site, re-check)
+        run: |
+          docker compose down -v
+          rm -rf backups
+          # Come back as production with fresh passwords: this also proves
+          # setup.sh's production path and that re-runs keep blog_public.
+          # setup.sh refuses SMTP_HOST=mailpit in production, so reach the same
+          # Mailpit under another name (docker-compose.override.yml loads by default).
+          printf 'services:\n  mailpit:\n    networks:\n      internal:\n        aliases: [smtp.ci.test]\n' > docker-compose.override.yml
+          sed -i 's/=change-me-/=ci-restore-/; s/^WP_ENVIRONMENT_TYPE=.*/WP_ENVIRONMENT_TYPE=production/; s/^SMTP_HOST=.*/SMTP_HOST=smtp.ci.test/' .env
+          docker compose up -d --wait
+          scripts/restore.sh --remote --yes
+          scripts/setup.sh
+          .github/ci/fingerprint.sh | tee fingerprint-after.txt
+          diff fingerprint-before.txt fingerprint-after.txt
+          scripts/smoke-test.sh
       - name: Container logs
         if: failure()
         run: docker compose logs --no-color
