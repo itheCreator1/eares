@@ -173,7 +173,7 @@ add_action(
 		if ( $logo ) {
 			wp_add_inline_style(
 				'login',
-				sprintf( '#login h1 a{background-image:url("%s");background-size:contain;width:96px;height:96px}', esc_url( $logo ) )
+				sprintf( '#login h1 a{background-image:url("%s");background-size:contain;width:96px;height:96px}body.login{background:#F7F1E6}', esc_url( $logo ) )
 			);
 		}
 	}
@@ -196,17 +196,3 @@ add_filter(
 		return $links;
 	}
 );
-
-// The login and sign-up screens carry the association's emblem, not
-// WordPress's, and the logo leads back to the site.
-add_action(
-	'login_enqueue_scripts',
-	function () {
-		printf(
-			'<style>#login h1 a{background-image:url(%s);background-size:84px 84px;width:84px;height:84px}body.login{background:#F7F1E6}</style>',
-			esc_url( get_theme_file_uri( 'assets/emblem.svg' ) )
-		);
-	}
-);
-add_filter( 'login_headerurl', fn() => home_url( '/' ) );
-add_filter( 'login_headertext', fn() => get_bloginfo( 'name' ) );
